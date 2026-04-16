@@ -1,0 +1,184 @@
+name: GoLogin Multi-Profile Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      gologin_api_key:
+        description: 'GoLogin API Key'
+        required: true
+        type: string
+      num_profiles:
+        description: 'Number of profiles to create (1-10)'
+        required: true
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+      profile_os:
+        description: 'Browser Profile OS'
+        required: true
+        type: choice
+        options:
+          - "win"
+          - "mac"
+      proxy_country:
+        description: 'Residential Proxy Country'
+        required: true
+        type: choice
+        options:
+          - "us" # United States
+          - "gb" # United Kingdom
+          - "fr" # France
+          - "de" # Germany
+          - "au" # Australia
+      start_url:
+        description: 'Target URL to run'
+        required: true
+        type: string
+        default: 'https://iphey.com/'
+
+jobs:
+  run-automation:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install gologin selenium webdriver-manager requests
+
+      - name: Create Python Automation Script
+        shell: pwsh
+        run: |
+          $script = @'
+          import os
+          import time
+          import requests
+          import json
+          from gologin import GoLogin
+          from selenium import webdriver
+          from selenium.webdriver.chrome.service import Service
+          from selenium.webdriver.chrome.options import Options
+          from webdriver_manager.chrome import ChromeDriverManager
+
+          TOKEN = os.environ.get("GOLOGIN_API_KEY")
+          NUM_PROFILES = int(os.environ.get("NUM_PROFILES", "1"))
+          PROFILE_OS = os.environ.get("PROFILE_OS", "win")
+          PROXY_COUNTRY = os.environ.get("PROXY_COUNTRY", "us")
+          START_URL = os.environ.get("START_URL", "https://iphey.com/")
+
+          def get_proxy_traffic(token):
+              """Fetches the 0.5GB Free Trial proxy traffic statistics."""
+              try:
+                  url = "https://api.gologin.com/users-proxies/geolocation/traffic"
+                  headers = {"Authorization": f"Bearer {token}"}
+                  r = requests.get(url, headers=headers)
+                  return r.json()
+              except Exception as e:
+                  return {"error": str(e)}
+
+          def create_profile(token, name, os_type):
+              """Creates a fresh GoLogin profile with random secure fingerprints."""
+              url = "https://api.gologin.com/browser/v2"
+              payload = {
+                  "name": name,
+                  "os": os_type,
+                  "navigator": {
+                      "language": "en-US",
+                      "userAgent": "random",
+                      "resolution": "1920x1080",
+                      "platform": os_type
+                  }
+              }
+              headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+              r = requests.post(url, json=payload, headers=headers)
+              r.raise_for_status()
+              return r.json()["id"]
+
+          def assign_proxy(token, profile_id, country_code):
+              """Generates and assigns a new Residential proxy to the profile."""
+              url = "https://api.gologin.com/users-proxies/mobile-proxy"
+              payload = {
+                  "countryCode": country_code,
+                  "profileIdToLink": profile_id,
+                  "isMobile": False, # Ensures it grabs Residential instead of Mobile
+                  "isDC": False      # Ensures it grabs Residential instead of DataCenter
+              }
+              headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+              r = requests.post(url, json=payload, headers=headers)
+              try:
+                  r.raise_for_status()
+              except requests.exceptions.HTTPError as e:
+                  print(f"❌ Proxy Assignment Error: {r.text}")
+                  raise e
+              return r.json()
+
+          def run_profile(index, token, profile_id, start_url):
+              """Runs a single profile safely. Caught errors won't crash the script."""
+              print(f"\n--- Running Profile {index}/{NUM_PROFILES} [ID: {profile_id}] ---")
+              gl = GoLogin({"token": token, "profile_id": profile_id})
+              driver = None
+              try:
+                  print("🚀 Starting Orbita browser (this automatically downloads on first run)...")
+                  debugger_address = gl.start()
+                  
+                  chrome_options = Options()
+                  chrome_options.add_experimental_option("debuggerAddress", debugger_address)
+                  
+                  print("🔗 Connecting Selenium...")
+                  try:
+                      chromium_version = gl.get_chromium_version()
+                      service = Service(ChromeDriverManager(driver_version=chromium_version).install())
+                  except:
+                      # Safe fallback if exactly matched driver version is temporarily unavailable
+                      service = Service(ChromeDriverManager().install())
+                      
+                  driver = webdriver.Chrome(service=service, options=chrome_options)
+                  
+                  print(f"🌐 Navigating to {start_url}...")
+                  driver.get(start_url)
+                  
+                  # Allow 15 seconds for Cloudflare/Captchas and proxies to resolve fully
+                  time.sleep(15) 
+                  
+                  screenshot_path = f"screenshot_profile_{index}.png"
+                  driver.save_screenshot(screenshot_path)
+                  print(f"📸 Screenshot saved to {screenshot_path}")
+                  print(f"🏷️ Page title: {driver.title}")
+                  print(f"✅ Profile {index} executed successfully.")
+                  
+              except Exception as e:
+                  print(f"❌ Error running profile {index}: {e}")
+              finally:
+                  if driver:
+                      try:
+                          driver.quit()
+                      except:
+                          pass
+                  print("🛑 Stopping GoLogin profile and closing ports...")
+                  gl.stop()
+
+          def main():
+              print("=== 🚀 GoLogin Automation Started ===")
+              
+              print("\n📊 Checking Initial Proxy Traffic (0.5GB Trial Limit)...")
+              traffic = get_proxy_traffic(TOKEN)
+              print(json.dumps(traffic, indent=2))
+              
+              created_profiles =
