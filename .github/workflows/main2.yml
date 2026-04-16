@@ -11,7 +11,17 @@ on:
         description: 'Number of sessions to run concurrently (1-10)'
         required: true
         type: choice
-        options:["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+        options: 
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
       profile_os:
         description: 'Session OS Fingerprint'
         required: true
@@ -37,7 +47,7 @@ on:
 
 jobs:
   run-scrapeless:
-    runs-on: ubuntu-latest # Since the browser runs in the Scrapeless Cloud, Ubuntu is faster and cheaper!
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - name: Checkout Code
@@ -52,7 +62,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install playwright requests
-          # No need to download playwright browsers since we are connecting via CDP to Scrapeless Cloud!
 
       - name: Create and Run Scrapeless Automation
         shell: python
@@ -77,10 +86,8 @@ jobs:
 
           def check_account_usage():
               print("\n📊 Checking Scrapeless Account Usage...")
-              # Scrapeless authenticates API endpoints using the x-api-token header
               headers = {"x-api-token": TOKEN}
               try:
-                  # Fetch user info to check remaining proxy allowance
                   res = requests.get("https://api.scrapeless.com/api/v1/user/info", headers=headers)
                   if res.status_code == 200:
                       print(json.dumps(res.json(), indent=2))
@@ -93,15 +100,12 @@ jobs:
           async def run_session(p, index):
               print(f"\n--- 🚀 Starting Scrapeless Session {index}/{NUM_SESSIONS} ---")
               
-              # Construct the connection URL with the requested proxy country.
-              # Scrapeless automatically assigns a unique Residential Proxy to each WSS connection natively.
               connection_url = f"wss://browser.scrapeless.com/browser?token={TOKEN}&proxy_country={PROXY_COUNTRY}&session_ttl=180"
               
               try:
                   print(f"[{index}] Connecting to Scrapeless Cloud Browser in {PROXY_COUNTRY}...")
                   browser = await p.chromium.connect_over_cdp(connection_url)
                   
-                  # Set OS specific User-Agent. Scrapeless handles the rest of the canvas/webgl spoofing natively in the cloud.
                   user_agent = (
                       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" 
                       if PROFILE_OS == "win" else 
@@ -114,14 +118,12 @@ jobs:
                   print(f"[{index}] 🌐 Navigating to {START_URL}...")
                   await page.goto(START_URL, timeout=60000)
                   
-                  # Wait for Cloudflare/Turnstile captchas to solve automatically and page to fully render
                   print(f"[{index}] Waiting 15 seconds for rendering and proxies to stabilize...")
                   await page.wait_for_timeout(15000)
                   
                   title = await page.title()
                   print(f"[{index}] ✅ Page loaded successfully! Title: {title}")
                   
-                  # Take unique screenshot for this session
                   screenshot_path = f"screenshot_session_{index}.png"
                   await page.screenshot(path=screenshot_path, full_page=True)
                   print(f"[{index}] 📸 Screenshot saved to {screenshot_path}")
@@ -136,11 +138,8 @@ jobs:
               check_account_usage()
               
               print(f"\n🚀 Launching {NUM_SESSIONS} Concurrent Scrapeless Sessions...")
-              # Launch Playwright and trigger all sessions at the exact same time
               async with async_playwright() as p:
                   tasks =[run_session(p, i + 1) for i in range(NUM_SESSIONS)]
-                  
-                  # return_exceptions=True ensures that if Session 2 fails, Sessions 1 and 3 keep running!
                   await asyncio.gather(*tasks, return_exceptions=True)
 
           if __name__ == "__main__":
