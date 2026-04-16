@@ -1,0 +1,154 @@
+name: Scrapeless API Multi-Session Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      scrapeless_api_key:
+        description: 'Scrapeless API Key (x-api-token)'
+        required: true
+        type: string
+      num_sessions:
+        description: 'Number of sessions to run concurrently (1-10)'
+        required: true
+        type: choice
+        options:["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+      profile_os:
+        description: 'Session OS Fingerprint'
+        required: true
+        type: choice
+        options:
+          - "win"
+          - "mac"
+      proxy_country:
+        description: 'Scrapeless Residential Proxy Country'
+        required: true
+        type: choice
+        options:
+          - "US" # United States
+          - "GB" # United Kingdom
+          - "FR" # France
+          - "DE" # Germany
+          - "AU" # Australia
+      start_url:
+        description: 'Target URL to scrape/automate'
+        required: true
+        type: string
+        default: 'https://iphey.com/'
+
+jobs:
+  run-scrapeless:
+    runs-on: ubuntu-latest # Since the browser runs in the Scrapeless Cloud, Ubuntu is faster and cheaper!
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright requests
+          # No need to download playwright browsers since we are connecting via CDP to Scrapeless Cloud!
+
+      - name: Create and Run Scrapeless Automation
+        shell: python
+        env:
+          SCRAPELESS_API_KEY: ${{ inputs.scrapeless_api_key }}
+          NUM_SESSIONS: ${{ inputs.num_sessions }}
+          PROFILE_OS: ${{ inputs.profile_os }}
+          PROXY_COUNTRY: ${{ inputs.proxy_country }}
+          START_URL: ${{ inputs.start_url }}
+        run: |
+          import os
+          import asyncio
+          import requests
+          import json
+          from playwright.async_api import async_playwright
+
+          TOKEN = os.environ.get("SCRAPELESS_API_KEY")
+          NUM_SESSIONS = int(os.environ.get("NUM_SESSIONS", "1"))
+          PROXY_COUNTRY = os.environ.get("PROXY_COUNTRY", "US")
+          START_URL = os.environ.get("START_URL", "https://iphey.com/")
+          PROFILE_OS = os.environ.get("PROFILE_OS", "win")
+
+          def check_account_usage():
+              print("\n📊 Checking Scrapeless Account Usage...")
+              # Scrapeless authenticates API endpoints using the x-api-token header
+              headers = {"x-api-token": TOKEN}
+              try:
+                  # Fetch user info to check remaining proxy allowance
+                  res = requests.get("https://api.scrapeless.com/api/v1/user/info", headers=headers)
+                  if res.status_code == 200:
+                      print(json.dumps(res.json(), indent=2))
+                  else:
+                      print(f"Could not fetch data automatically (Status: {res.status_code}).")
+                      print("👉 Please check your Scrapeless Dashboard -> Billing for exact remaining 0.5GB Residential Proxy allowance.")
+              except Exception as e:
+                  print(f"Error fetching usage: {e}")
+
+          async def run_session(p, index):
+              print(f"\n--- 🚀 Starting Scrapeless Session {index}/{NUM_SESSIONS} ---")
+              
+              # Construct the connection URL with the requested proxy country.
+              # Scrapeless automatically assigns a unique Residential Proxy to each WSS connection natively.
+              connection_url = f"wss://browser.scrapeless.com/browser?token={TOKEN}&proxy_country={PROXY_COUNTRY}&session_ttl=180"
+              
+              try:
+                  print(f"[{index}] Connecting to Scrapeless Cloud Browser in {PROXY_COUNTRY}...")
+                  browser = await p.chromium.connect_over_cdp(connection_url)
+                  
+                  # Set OS specific User-Agent. Scrapeless handles the rest of the canvas/webgl spoofing natively in the cloud.
+                  user_agent = (
+                      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" 
+                      if PROFILE_OS == "win" else 
+                      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                  )
+                  
+                  context = await browser.new_context(user_agent=user_agent)
+                  page = await context.new_page()
+                  
+                  print(f"[{index}] 🌐 Navigating to {START_URL}...")
+                  await page.goto(START_URL, timeout=60000)
+                  
+                  # Wait for Cloudflare/Turnstile captchas to solve automatically and page to fully render
+                  print(f"[{index}] Waiting 15 seconds for rendering and proxies to stabilize...")
+                  await page.wait_for_timeout(15000)
+                  
+                  title = await page.title()
+                  print(f"[{index}] ✅ Page loaded successfully! Title: {title}")
+                  
+                  # Take unique screenshot for this session
+                  screenshot_path = f"screenshot_session_{index}.png"
+                  await page.screenshot(path=screenshot_path, full_page=True)
+                  print(f"[{index}] 📸 Screenshot saved to {screenshot_path}")
+                  
+                  await browser.close()
+                  print(f"[{index}] 🛑 Session cleanly closed.")
+                  
+              except Exception as e:
+                  print(f"[{index}] ❌ Session Failed: {str(e)}")
+
+          async def main():
+              check_account_usage()
+              
+              print(f"\n🚀 Launching {NUM_SESSIONS} Concurrent Scrapeless Sessions...")
+              # Launch Playwright and trigger all sessions at the exact same time
+              async with async_playwright() as p:
+                  tasks =[run_session(p, i + 1) for i in range(NUM_SESSIONS)]
+                  
+                  # return_exceptions=True ensures that if Session 2 fails, Sessions 1 and 3 keep running!
+                  await asyncio.gather(*tasks, return_exceptions=True)
+
+          if __name__ == "__main__":
+              asyncio.run(main())
+
+      - name: Upload Session Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrapeless-session-screenshots
+          path: '*.png'
